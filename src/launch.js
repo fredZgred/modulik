@@ -2,21 +2,12 @@ const { fork } = require('child_process');
 const path = require('path');
 const chokidar = require('chokidar');
 const { createChildController } = require('./bridge');
+const createLogger = require('./logger');
 
 const moduleStateIdle = 'moduleStateIdle';
 const moduleStateStarting = 'moduleStateStarting';
 const moduleStateAccessible = 'moduleStateAccessible';
 const childPath = path.resolve(__dirname, 'child.js');
-const createLogger = (moduleName, quiet) => {
-  const makeMethod = loggingFunction => message => {
-    if (quiet) return;
-    loggingFunction(`[modulik]: ${moduleName} - ${message}`);
-  };
-  return {
-    info: makeMethod(console.info),
-    error: makeMethod(console.error),
-  };
-};
 
 const launchFully = ({ cfg, onRestart, onReady, onFailed }) => {
   const moduleFileName = path.parse(cfg.path).base;
