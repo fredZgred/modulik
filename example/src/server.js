@@ -8,7 +8,7 @@ const webpackConfig = require('../webpack.config');
 const ssrModulik = modulik('./ssr', {
   watch: ['./App'],
   extensions: ['jsx'],
-  disable: process.env.NODE_ENV === 'production',
+  disabled: process.env.NODE_ENV === 'production',
 });
 
 const port = process.argv[2];

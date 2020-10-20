@@ -40,22 +40,27 @@ const scheduler = {
   },
 };
 
+const attachListener = (paths, events, onChange) =>
+  new Promise(resolve => {
+    const fsWatcher = chokidar.watch(paths, { ignoreInitial: true });
+    events.forEach(event => {
+      fsWatcher.on(event, () => {
+        setImmediate(async () => {
+          await fsWatcher.close();
+          onChange();
+        });
+      });
+    });
+    fsWatcher.on('ready', resolve);
+  });
+
 const writeFileAndWait = (path, content) =>
   new Promise(async resolve => {
     if (existsSync(path) && readFileSync(path, 'utf-8') === content) {
       resolve();
       return;
     }
-    const fsWatcher = chokidar.watch(path, { ignoreInitial: true });
-    const finish = () => {
-      process.nextTick(async () => {
-        await fsWatcher.close();
-        await wait(10);
-        resolve();
-      });
-    };
-    fsWatcher.on('add', finish).on('change', finish);
-    await wait(10);
+    await attachListener(path, ['add', 'change'], resolve);
     writeFileSync(path, content);
   });
 
@@ -65,17 +70,7 @@ const deleteFileAndWait = path =>
       resolve();
       return;
     }
-
-    const fsWatcher = chokidar
-      .watch(path, { ignoreInitial: true })
-      .on('unlink', () => {
-        process.nextTick(async () => {
-          await fsWatcher.close();
-          await wait(10);
-          resolve();
-        });
-      });
-    await wait(10);
+    await attachListener(path, ['unlink'], resolve);
     rimraf.sync(path);
   });
 

@@ -52,17 +52,14 @@ module.exports = (pathOrOptions, options) => {
     });
     // Prevent node from complaining about unhandled rejection
     moduleBodyPromise.catch(() => {});
-  };
 
-  const onRestart = () => {
-    recreateModuleBodyPromise();
     emitter.emit('restart');
   };
-  const onReady = moduleBody => {
+  const resolveModule = moduleBody => {
     resolveModuleBodyPromise(moduleBody);
     emitter.emit('ready');
   };
-  const onFailed = error => {
+  const rejectModule = error => {
     rejectModuleBodyPromise(error);
     emitter.emit('failed', error);
   };
@@ -70,9 +67,9 @@ module.exports = (pathOrOptions, options) => {
   recreateModuleBodyPromise();
   const { restart, kill } = launch({
     cfg,
-    onRestart,
-    onReady,
-    onFailed,
+    recreateModulePromise: recreateModuleBodyPromise,
+    resolveModule,
+    rejectModule,
   });
 
   return Object.setPrototypeOf(
