@@ -331,7 +331,7 @@ const launchPhantomly = ({ cfg, resolveModule, rejectModule }) => {
 };
 
 const launch = ({ cfg, recreateModulePromise, resolveModule, rejectModule }) =>
-  (cfg.disabled ? launchPhantomly : launchFully)({
+  (cfg.disabled ? launchPhantomly : l)({
     cfg,
     recreateModulePromise,
     resolveModule,

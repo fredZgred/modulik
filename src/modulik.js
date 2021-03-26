@@ -65,20 +65,30 @@ module.exports = (pathOrOptions, options) => {
   };
 
   recreateModuleBodyPromise();
-  const { restart, kill } = launch({
+  const moduleWrapper = launch({
     cfg,
     recreateModulePromise: recreateModuleBodyPromise,
     resolveModule,
     rejectModule,
   });
 
+  const restart = async () => {
+    moduleWrapper.restart();
+    await moduleBodyPromise.catch(() => {});
+  };
+
+  const kill = async () => {
+    moduleWrapper.kill();
+    await moduleBodyPromise.catch(() => {});
+  };
+
   return Object.setPrototypeOf(
     {
       get module() {
         return moduleBodyPromise;
       },
-      restart: async () => restart(),
-      kill: async () => kill(),
+      restart,
+      kill,
     },
     emitter,
   );

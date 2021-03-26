@@ -1,58 +1,131 @@
-const { Machine, assign, interpret } = require('xstate');
+const { createMachine, assign, interpret, send, spawn } = require('xstate');
 
-const stateMachine = {
-  id: 'root',
+const isState = (state, name) => state.toStrings().includes(name);
+
+const fsWatcherChart = {
+  id: 'fsWatcher',
+  initial: 'starting',
+  states: {
+    starting: {
+      entry: 'startFSWatcher',
+      FS_WATCHER_READY: 'ready',
+    },
+    ready: {
+      on: {
+        STOP: 'stopped',
+      },
+    },
+    stopping: {
+      entry: 'stopFsWatcher',
+      on: {
+        FS_WATCHER_STOPPED: 'stopped',
+      },
+    },
+    stopped: {
+      final: true,
+      entry: 'stopFSWatcher',
+    },
+  },
+};
+
+const childProcessChart = {
+  id: 'childProcess',
+  context: {
+    exitedWithError: false,
+  },
+  on: {
+    STOP: {
+      target: 'killing',
+      actions: 'clearExitedWithErrorFlag',
+    },
+  },
+  initial: 'starting',
+  states: {
+    starting: {
+      entry: 'startChildProcess',
+      on: {
+        CHILD_PROCESS_READY: 'ready',
+        CHILD_PROCESS_EXITED: {
+          target: 'killed',
+          actions: 'setExitedWithErrorFlag',
+        },
+      },
+    },
+    ready: {
+      on: {
+        CHILD_PROCESS_EXITED: {
+          target: 'killed',
+          actions: 'setExitedWithErrorFlag',
+        },
+      },
+    },
+    killing: {
+      entry: 'killChildProcess',
+      on: {
+        CHILD_PROCESS_EXITED: {
+          target: 'killed',
+          actions: 'setExitedWithErrorFlag',
+        },
+      },
+    },
+    killed: {
+      on: {
+        CHILD_PROCESS_START: {
+          target: 'starting',
+          actions: 'clearExitedWithErrorFlag',
+        },
+      },
+    },
+    stopped: {
+      final: true,
+    },
+  },
+};
+
+const mainChart = {
+  id: 'main',
   initial: 'idle',
   context: {
+    fsWatcher: null,
+    childProcess: null,
     restartExpected: false,
-    fSWatcherExited: false,
-    childProcessExited: false,
   },
   states: {
     idle: {
       on: {
-        START: [{ target: 'setup' }],
-        KILL_REQUESTED: [
-          {
-            target: '#root.killed',
-            actions: ['rejectModuleWithAvailabilityError'],
-          },
-        ],
+        START: 'setup',
+        KILL_REQUESTED: {
+          target: 'killed',
+          actions: 'rejectModuleWithAvailabilityError',
+        },
       },
     },
     setup: {
-      entry: ['startFSWatcher'],
+      entry: 'spawnFsWatcher',
+      always: { target: 'starting', cond: 'isFsWatcherReady' },
       on: {
-        FS_WATCHER_READY: [{ target: '#root.starting' }],
-        KILL_REQUESTED: [
-          {
-            target: '#root.killing.stoppingFSWatcher',
-            actions: ['rejectModuleWithAvailabilityError'],
-          },
-        ],
+        KILL_REQUESTED: {
+          target: 'killing',
+          actions: 'rejectModuleWithAvailabilityError',
+        },
       },
     },
     starting: {
-      entry: ['startChildProcess'],
+      entry: 'spawnChildProcess',
+      always: [
+        { target: 'restarting', cond: 'isRestartExpected' },
+        { target: 'failed', cond: 'didChildProcessExitedWithError' },
+        { target: 'accessible' },
+      ],
       on: {
-        MODULE_CHANGED: [{ actions: ['setRestartExpected'] }],
-        RESTART_REQUESTED: [{ actions: ['setRestartExpected'] }],
-        READY: [
-          {
-            target: '#root.restarting',
-            cond: 'isRestartExpected',
-          },
-          { target: '#root.accessible' },
-        ],
-        PROCESS_EXITED: [{ target: '#root.failed' }],
-        KILL_REQUESTED: [
-          {
-            target: '#root.killing',
-            actions: ['rejectModuleWithAvailabilityError'],
-          },
-        ],
+        MODULE_CHANGED: { actions: 'setRestartExpectedFlag' },
+        RESTART_REQUESTED: { actions: 'setRestartExpectedFlag' },
+        KILL_REQUESTED: {
+          target: 'killing',
+          actions: 'rejectModuleWithAvailabilityError',
+        },
       },
-      exit: ['clearRestartExpected'],
+      exit: 'clearRestartExpectedFlag',
     },
     accessible: {
       entry: ['resolveModule', 'logReady', 'handlePendingExecutions'],
@@ -60,22 +133,22 @@ const stateMachine = {
       states: {
         childProcessRunning: {
           on: {
-            MODULE_CHANGED: [{ target: '#root.restarting' }],
-            RESTART_REQUESTED: [{ target: '#root.restarting' }],
-            PROCESS_EXITED: [
-              { target: '#root.failed', cond: 'didProcessExitWithError' },
-              { target: '#root.accessible.childProcessExited' },
+            MODULE_CHANGED: [{ target: '#main.restarting' }],
+            RESTART_REQUESTED: [{ target: '#main.restarting' }],
+            CHILD_PROCESS_EXITED: [
+              { target: '#main.failed', cond: 'didProcessExitWithError' },
+              { target: '#main.accessible.childProcessExited' },
             ],
-            KILL_REQUESTED: [{ target: '#root.killing' }],
+            KILL_REQUESTED: [{ target: '#main.killing' }],
           },
         },
         childProcessExited: {
           on: {
-            MODULE_CHANGED: [{ target: '#root.restarting.childProcessExited' }],
+            MODULE_CHANGED: [{ target: '#main.restarting.childProcessExited' }],
             RESTART_REQUESTED: [
-              { target: '#root.restarting.childProcessExited' },
+              { target: '#main.restarting.childProcessExited' },
             ],
-            KILL_REQUESTED: [{ target: '#root.killing.stoppingFSWatcher' }],
+            KILL_REQUESTED: [{ target: '#main.killing.stoppingFSWatcher' }],
           },
         },
       },
@@ -86,13 +159,13 @@ const stateMachine = {
       states: {
         childProcessRunning: {
           on: {
-            PROCESS_EXITED: [
-              { target: '#root.failed', cond: 'didProcessExitWithError' },
-              { target: '#root.restarting.childProcessExited' },
+            CHILD_PROCESS_EXITED: [
+              { target: '#main.failed', cond: 'didProcessExitWithError' },
+              { target: '#main.restarting.childProcessExited' },
             ],
             KILL_REQUESTED: [
               {
-                target: '#root.killing',
+                target: '#main.killing',
                 actions: ['rejectModuleWithAvailabilityError'],
               },
             ],
@@ -100,7 +173,7 @@ const stateMachine = {
         },
         childProcessExited: {
           on: {
-            '': [{ target: '#root.starting' }],
+            '': [{ target: '#main.starting' }],
           },
         },
       },
@@ -108,36 +181,23 @@ const stateMachine = {
     failed: {
       entry: ['logFailed', 'rejectModuleWithFailureError'],
       on: {
-        MODULE_CHANGED: [{ target: '#root.restarting.childProcessExited' }],
-        RESTART_REQUESTED: [{ target: '#root.restarting.childProcessExited' }],
-        KILL_REQUESTED: [{ target: '#root.killing.stoppingFSWatcher' }],
+        MODULE_CHANGED: [{ target: '#main.restarting.childProcessExited' }],
+        RESTART_REQUESTED: [{ target: '#main.restarting.childProcessExited' }],
+        KILL_REQUESTED: [{ target: '#main.killing.stoppingFSWatcher' }],
       },
     },
     killing: {
-      initial: 'stoppingChildProcess',
-      states: {
-        stoppingChildProcess: {
-          entry: ['stopChildProcess'],
-          on: {
-            PROCESS_EXITED: [{ target: '#root.killing.stoppingFSWatcher' }],
-          },
-        },
-        stoppingFSWatcher: {
-          entry: ['stopFSWatcher'],
-          on: {
-            FS_WATCHER_STOPPED: [{ target: '#root.killed' }],
-          },
-        },
-      },
+      entry: ['killFsWatcher', 'killChildProcess'],
+      always: { target: '#main.killed', cond: 'didAllServicesStop' },
       on: {
-        RESTART_REQUESTED: [{ actions: ['logCannotRestartKilledModule'] }],
+        RESTART_REQUESTED: { actions: 'logCannotRestartKilledModule' },
       },
     },
     killed: {
-      entry: ['notifyKilled'],
+      entry: 'notifyKilled',
       final: true,
       on: {
-        RESTART_REQUESTED: [{ actions: ['logCannotRestartKilledModule'] }],
+        RESTART_REQUESTED: { actions: 'logCannotRestartKilledModule' },
       },
     },
   },
@@ -159,8 +219,41 @@ const createState = ({
   logFailed,
   logCannotRestartKilledModule,
 }) => {
-  const machine = Machine(stateMachine, {
+  const fsWatcherMachine = createMachine(fsWatcherChart, {
     actions: {
+      startFSWatcher,
+      stopFSWatcher,
+    },
+  });
+
+  const childProcessMachine = createMachine(childProcessChart, {
+    actions: {
+      startChildProcess,
+      killChildProcess: stopChildProcess,
+      setExitedWithErrorFlag: assign({
+        exitedWithError: (_, event) => !!event.error,
+      }),
+      clearExitedWithErrorFlag: assign({
+        exitedWithError: false,
+      }),
+    },
+  });
+
+  const mainMachine = createMachine(mainChart, {
+    actions: {
+      spawnFsWatcher: assign({
+        fsWatcher: () =>
+          spawn(fsWatcherMachine, { name: 'fsWatcher', sync: true }),
+      }),
+      killFsWatcher: ctx => ctx.fsWatcher.stop(),
+
+      spawnChildProcess: assign({
+        childProcess: () =>
+          spawn(childProcessMachine, { name: 'childProcess', sync: true }),
+      }),
+      stopChildProcess: ctx => send('STOP', { to: ctx.childProcess }),
+      killChildProcess: ctx => ctx.childProcess.stop(),
+
       recreateModulePromise,
       resolveModule: (_, { data }) => {
         resolveModule({ data });
@@ -170,53 +263,50 @@ const createState = ({
       handlePendingExecutions: (_, { data }) => {
         handlePendingExecutions({ data });
       },
-      startFSWatcher,
-      stopFSWatcher,
-      startChildProcess,
-      stopChildProcess,
       notifyKilled,
       logReady,
       logRestarting,
       logFailed,
       logCannotRestartKilledModule,
-      setRestartExpected: assign({
+      setRestartExpectedFlag: assign({
         restartExpected: true,
       }),
-      clearRestartExpected: assign({
+      clearRestartExpectedFlag: assign({
         restartExpected: false,
-      }),
-      setFSWatcherExited: assign({
-        fSWatcherExited: true,
-      }),
-      setChildProcessExited: assign({
-        childProcessExited: true,
       }),
     },
     guards: {
+      isFsWatcherReady: ctx => isState(ctx.fsWatcher.state, 'ready'),
       isRestartExpected: ctx => ctx.restartExpected,
-      didProcessExitWithError: (_, event) => event.error,
-      didAllServicesExited: ctx =>
-        ctx.fSWatcherExited && ctx.childProcessExited,
+      didChildProcessExitedWithError: ctx =>
+        isState(ctx.childProcess.state, 'killed') &&
+        ctx.childProcess.state.context.exitedWithError,
+      didAllServicesStop: ctx =>
+        isState(ctx.fsWatcher, 'stopped') &&
+        isState(ctx.childProcess, 'stopped'),
     },
   });
-  const service = interpret(machine);
+  const service = interpret(mainMachine);
   service.start();
 
   process.nextTick(() => {
     service.send('START');
   });
 
-  const isState = name => service.state.toStrings().includes(name);
   return {
-    isStarting: () => isState('starting'),
-    isAccessible: () => isState('accessible'),
-    isKilled: () => isState('killed'),
-    fSWatcherReady: () => service.send('FS_WATCHER_READY'),
-    moduleChanged: () => service.send('MODULE_CHANGED'),
+    isStarting: () => isState(service.state, 'starting'),
+    isAccessible: () => isState(service.state, 'accessible'),
+    isKilled: () => isState(service.state, 'killed'),
+    fSWatcherReady: () =>
+      service.state.context.fsWacher.send('FS_WATCHER_READY'),
+    moduleChanged: () => service.state.context.fsWacher.send('MODULE_CHANGED'),
     restartRequested: () => service.send('RESTART_REQUESTED'),
     ready: data => service.send('READY', data),
     execute: args => service.send('EXECUTE', { args }),
-    processExited: ({ error }) => service.send('PROCESS_EXITED', { error }),
+    processExited: ({ error }) =>
+      service.state.context.childProcess.send('CHILD_PROCESS_EXITED', {
+        error,
+      }),
     killRequested: () => service.send('KILL_REQUESTED'),
     fSWatcherStopped: () => service.send('FS_WATCHER_STOPPED'),
   };

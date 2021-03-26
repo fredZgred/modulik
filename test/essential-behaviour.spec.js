@@ -384,6 +384,7 @@ describe('Essential behaviour', () => {
     numberModulik.on('restart', () => {
       emitted = true;
     });
+    await numberModulik.module;
     await numberModulik.restart();
     assert.deepStrictEqual(emitted, true);
   });
